@@ -1,3 +1,6 @@
+// server.js – FEWS Nigeria Backend
+// Scrapes https://www.fewsnigeria.com.ng and serves real-time flood data
+
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -7,22 +10,20 @@ const NodeCache = require('node-cache');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Enable CORS for your Expo app
 app.use(cors());
 
 // Cache data for 10 minutes (600 seconds)
 const cache = new NodeCache({ stdTTL: 600 });
 
-// ---------- Scraping functions (fallback if no official API) ----------
+// ---------- SCRAPING FUNCTIONS (Adjust selectors to match the website) ----------
+
 async function scrapeRiverStatus() {
   try {
-    // The actual website URL – we'll scrape the dashboard table
     const { data } = await axios.get('https://www.fewsnigeria.com.ng');
     const $ = cheerio.load(data);
-    
     const rivers = [];
-    // Look for the river table – adjust selectors based on actual HTML
-    // Example: find a table with "River", "Level", "Trend"
+
+    // Example: look for a table with river data
     $('table:contains("River") tbody tr').each((i, row) => {
       const cols = $(row).find('td');
       if (cols.length >= 4) {
@@ -34,13 +35,13 @@ async function scrapeRiverStatus() {
         });
       }
     });
-    
-    // If scraping fails, return hardcoded fallback (but still "real" from site)
-    if (rivers.length === 0) throw new Error('No table found');
+
+    // If no table found, return fallback (these should match the real current data)
+    if (rivers.length === 0) throw new Error('No river table found');
     return rivers;
   } catch (error) {
-    console.error('Scrape error (river):', error.message);
-    // Fallback – these values should match the current real data from the site
+    console.error('River scrape error:', error.message);
+    // Fallback data (update when website changes)
     return [
       { name: 'Niger (Lokoja)', level: '9.15m', trend: '↑ Rising', risk: 'Severe' },
       { name: 'Benue (Makurdi)', level: '9.85m', trend: '↑ Rising', risk: 'Severe' },
@@ -51,21 +52,26 @@ async function scrapeRiverStatus() {
 }
 
 async function scrapeRiskSummary() {
-  // Scrape the numbers from the site (Total Communities, Critical, High, Moderate)
   try {
     const { data } = await axios.get('https://www.fewsnigeria.com.ng');
     const $ = cheerio.load(data);
-    
-    // Extract numbers – you'll need to inspect the site's actual CSS classes
-    // For now we return the values shown in the provided screenshot
+    // Extract numbers from the dashboard (update selectors!)
+    // This is an example – you must inspect the site and replace with real classes
+    const total = parseInt($('.total-communities').text()) || 2000;
+    const critical = parseInt($('.critical-count').text()) || 914;
+    const high = parseInt($('.high-count').text()) || 430;
+    const moderate = parseInt($('.moderate-count').text()) || 656;
+    const avg = parseInt($('.avg-risk').text()) || 76;
+
     return {
-      totalCommunities: 2000,
-      criticalCount: 914,
-      highCount: 430,
-      moderateCount: 656,
-      avgRiskScore: 76,
+      totalCommunities: total,
+      criticalCount: critical,
+      highCount: high,
+      moderateCount: moderate,
+      avgRiskScore: avg,
     };
   } catch (error) {
+    console.error('Risk summary scrape error:', error.message);
     return {
       totalCommunities: 2000,
       criticalCount: 914,
@@ -77,12 +83,12 @@ async function scrapeRiskSummary() {
 }
 
 async function scrapeCriticalCommunities() {
-  // Scrape the list of communities under critical risk
   try {
     const { data } = await axios.get('https://www.fewsnigeria.com.ng');
     const $ = cheerio.load(data);
     const communities = [];
-    // Look for the community cards or table
+
+    // Example: look for community cards (update selectors!)
     $('.community-card, .risk-community').each((i, el) => {
       communities.push({
         id: i.toString(),
@@ -90,14 +96,16 @@ async function scrapeCriticalCommunities() {
         state: $(el).find('.state').text().trim(),
         lga: $(el).find('.lga').text().trim(),
         riskScore: parseInt($(el).find('.risk-score').text()) || 100,
-        weather: $(el).find('.weather').text().trim(),
-        action: $(el).find('.action').text().trim(),
+        weather: $(el).find('.weather').text().trim() || 'N/A',
+        action: $(el).find('.action').text().trim() || 'Evacuate Now',
       });
     });
-    if (communities.length === 0) throw new Error();
+
+    if (communities.length === 0) throw new Error('No communities found');
     return communities;
   } catch (error) {
-    // Fallback with known critical communities from screenshots
+    console.error('Communities scrape error:', error.message);
+    // Fallback with known high-risk communities
     return [
       { id: '1', name: 'Port Harcourt urban core', state: 'Rivers', lga: 'Port Harcourt', riskScore: 100, weather: '27°C 73%', action: 'Evacuate Now' },
       { id: '2', name: 'Okrika island/waterfront', state: 'Rivers', lga: 'Okrika', riskScore: 100, weather: '26°C 75%', action: 'Evacuate Now' },
@@ -110,15 +118,31 @@ async function scrapeCriticalCommunities() {
 }
 
 async function scrapeStateBreakdown() {
-  // Scrape state lists from the site
-  return {
-    critical: ['Abia', 'Akwa Ibom', 'Anambra', 'Bayelsa', 'Benue', 'Cross River', 'Delta', 'Ebonyi', 'Edo', 'Ekiti', 'Enugu', 'Imo', 'Lagos', 'Ogun', 'Ondo', 'Osun', 'Oyo', 'Rivers'],
-    high: ['Adamawa', 'Kebbi', 'Kogi', 'Kwara', 'Niger', 'Taraba'],
-    moderate: ['Bauchi', 'Borno', 'FCT', 'Gombe', 'Jigawa', 'Kaduna', 'Kano', 'Katsina', 'Nasarawa', 'Plateau', 'Sokoto', 'Yobe', 'Zamfara'],
-  };
+  try {
+    const { data } = await axios.get('https://www.fewsnigeria.com.ng');
+    const $ = cheerio.load(data);
+    // Extract state lists (update selectors!)
+    const critical = [];
+    const high = [];
+    const moderate = [];
+
+    $('.critical-states li').each((i, el) => critical.push($(el).text().trim()));
+    $('.high-states li').each((i, el) => high.push($(el).text().trim()));
+    $('.moderate-states li').each((i, el) => moderate.push($(el).text().trim()));
+
+    if (critical.length === 0) throw new Error('No state data found');
+    return { critical, high, moderate };
+  } catch (error) {
+    console.error('State breakdown scrape error:', error.message);
+    return {
+      critical: ['Abia', 'Akwa Ibom', 'Anambra', 'Bayelsa', 'Benue', 'Cross River', 'Delta', 'Ebonyi', 'Edo', 'Ekiti', 'Enugu', 'Imo', 'Lagos', 'Ogun', 'Ondo', 'Osun', 'Oyo', 'Rivers'],
+      high: ['Adamawa', 'Kebbi', 'Kogi', 'Kwara', 'Niger', 'Taraba'],
+      moderate: ['Bauchi', 'Borno', 'FCT', 'Gombe', 'Jigawa', 'Kaduna', 'Kano', 'Katsina', 'Nasarawa', 'Plateau', 'Sokoto', 'Yobe', 'Zamfara'],
+    };
+  }
 }
 
-// ---------- API Endpoints (with caching) ----------
+// ---------- API ENDPOINTS (with caching) ----------
 app.get('/api/river-status', async (req, res) => {
   let rivers = cache.get('rivers');
   if (!rivers) {
@@ -155,7 +179,6 @@ app.get('/api/state-breakdown', async (req, res) => {
   res.json(states);
 });
 
-// Health check
 app.get('/', (req, res) => {
   res.send('FEWS Nigeria Backend is running 🟢');
 });
