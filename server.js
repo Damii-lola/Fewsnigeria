@@ -1,5 +1,5 @@
 // server.js – FEWS Nigeria Backend
-// Scrapes https://www.fewsnigeria.com.ng and serves real-time flood data
+// Deployed on Render – serves real-time flood data and weather
 
 const express = require('express');
 const cors = require('cors');
@@ -10,12 +10,17 @@ const NodeCache = require('node-cache');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Enable CORS for your Expo app
 app.use(cors());
 
 // Cache data for 10 minutes (600 seconds)
 const cache = new NodeCache({ stdTTL: 600 });
 
-// ---------- SCRAPING FUNCTIONS (Adjust selectors to match the website) ----------
+// ------------------- WEATHER CONFIGURATION -------------------
+const WWO_API_KEY = process.env.WWO_API_KEY;
+
+// ------------------- SCRAPING FUNCTIONS (flood data) -------------------
+// Note: Adjust the Cheerio selectors to match the actual HTML of fewsnigeria.com.ng
 
 async function scrapeRiverStatus() {
   try {
@@ -23,8 +28,9 @@ async function scrapeRiverStatus() {
     const $ = cheerio.load(data);
     const rivers = [];
 
-    // Example: look for a table with river data
-    $('table:contains("River") tbody tr').each((i, row) => {
+    // Try to find a table that contains river names, levels, trends, risks
+    // This selector is a best guess – you may need to inspect the real website
+    $('table:contains("River") tbody tr, .river-table tbody tr').each((i, row) => {
       const cols = $(row).find('td');
       if (cols.length >= 4) {
         rivers.push({
@@ -36,12 +42,11 @@ async function scrapeRiverStatus() {
       }
     });
 
-    // If no table found, return fallback (these should match the real current data)
-    if (rivers.length === 0) throw new Error('No river table found');
+    if (rivers.length === 0) throw new Error('No river data found');
     return rivers;
   } catch (error) {
     console.error('River scrape error:', error.message);
-    // Fallback data (update when website changes)
+    // Fallback data (should reflect current real data from the website)
     return [
       { name: 'Niger (Lokoja)', level: '9.15m', trend: '↑ Rising', risk: 'Severe' },
       { name: 'Benue (Makurdi)', level: '9.85m', trend: '↑ Rising', risk: 'Severe' },
@@ -55,13 +60,12 @@ async function scrapeRiskSummary() {
   try {
     const { data } = await axios.get('https://www.fewsnigeria.com.ng');
     const $ = cheerio.load(data);
-    // Extract numbers from the dashboard (update selectors!)
-    // This is an example – you must inspect the site and replace with real classes
-    const total = parseInt($('.total-communities').text()) || 2000;
-    const critical = parseInt($('.critical-count').text()) || 914;
-    const high = parseInt($('.high-count').text()) || 430;
-    const moderate = parseInt($('.moderate-count').text()) || 656;
-    const avg = parseInt($('.avg-risk').text()) || 76;
+    // Extract numbers from the dashboard – update selectors as needed
+    const total = parseInt($('.total-communities, [data-total]').text()) || 2000;
+    const critical = parseInt($('.critical-count, [data-critical]').text()) || 914;
+    const high = parseInt($('.high-count, [data-high]').text()) || 430;
+    const moderate = parseInt($('.moderate-count, [data-moderate]').text()) || 656;
+    const avg = parseInt($('.avg-risk, [data-avg]').text()) || 76;
 
     return {
       totalCommunities: total,
@@ -88,16 +92,16 @@ async function scrapeCriticalCommunities() {
     const $ = cheerio.load(data);
     const communities = [];
 
-    // Example: look for community cards (update selectors!)
-    $('.community-card, .risk-community').each((i, el) => {
+    // Look for community cards or list items – adjust selectors
+    $('.community-card, .risk-community, .critical-community').each((i, el) => {
       communities.push({
         id: i.toString(),
-        name: $(el).find('.name').text().trim(),
-        state: $(el).find('.state').text().trim(),
-        lga: $(el).find('.lga').text().trim(),
-        riskScore: parseInt($(el).find('.risk-score').text()) || 100,
-        weather: $(el).find('.weather').text().trim() || 'N/A',
-        action: $(el).find('.action').text().trim() || 'Evacuate Now',
+        name: $(el).find('.name, .community-name').text().trim(),
+        state: $(el).find('.state, .community-state').text().trim(),
+        lga: $(el).find('.lga, .community-lga').text().trim(),
+        riskScore: parseInt($(el).find('.risk-score, .score').text()) || 100,
+        weather: $(el).find('.weather, .weather-data').text().trim() || 'N/A',
+        action: $(el).find('.action, .evacuation-action').text().trim() || 'Evacuate Now',
       });
     });
 
@@ -105,7 +109,7 @@ async function scrapeCriticalCommunities() {
     return communities;
   } catch (error) {
     console.error('Communities scrape error:', error.message);
-    // Fallback with known high-risk communities
+    // Fallback with known high‑risk communities
     return [
       { id: '1', name: 'Port Harcourt urban core', state: 'Rivers', lga: 'Port Harcourt', riskScore: 100, weather: '27°C 73%', action: 'Evacuate Now' },
       { id: '2', name: 'Okrika island/waterfront', state: 'Rivers', lga: 'Okrika', riskScore: 100, weather: '26°C 75%', action: 'Evacuate Now' },
@@ -121,14 +125,14 @@ async function scrapeStateBreakdown() {
   try {
     const { data } = await axios.get('https://www.fewsnigeria.com.ng');
     const $ = cheerio.load(data);
-    // Extract state lists (update selectors!)
     const critical = [];
     const high = [];
     const moderate = [];
 
-    $('.critical-states li').each((i, el) => critical.push($(el).text().trim()));
-    $('.high-states li').each((i, el) => high.push($(el).text().trim()));
-    $('.moderate-states li').each((i, el) => moderate.push($(el).text().trim()));
+    // Try to extract state lists from the page
+    $('.critical-states li, .critical-list li').each((i, el) => critical.push($(el).text().trim()));
+    $('.high-states li, .high-list li').each((i, el) => high.push($(el).text().trim()));
+    $('.moderate-states li, .moderate-list li').each((i, el) => moderate.push($(el).text().trim()));
 
     if (critical.length === 0) throw new Error('No state data found');
     return { critical, high, moderate };
@@ -142,7 +146,24 @@ async function scrapeStateBreakdown() {
   }
 }
 
-// ---------- API ENDPOINTS (with caching) ----------
+// ------------------- WEATHER FETCH (using client's WWO key) -------------------
+async function fetchWeatherFromWWO(lat, lon) {
+  if (!WWO_API_KEY) {
+    throw new Error('Weather API key not configured on server');
+  }
+  const url = `https://api.worldweatheronline.com/premium/v1/weather.ashx?key=${WWO_API_KEY}&q=${lat},${lon}&format=json&num_of_days=1`;
+  const response = await axios.get(url);
+  const current = response.data.data.current_condition[0];
+  return {
+    temp: `${current.temp_C}°C`,
+    condition: current.weatherDesc[0].value,
+    humidity: `${current.humidity}%`,
+    feelsLike: `${current.FeelsLikeC}°C`,
+    wind: `${current.winddir16Point} ${current.windspeedKmph} km/h`,
+  };
+}
+
+// ------------------- API ENDPOINTS (with caching) -------------------
 app.get('/api/river-status', async (req, res) => {
   let rivers = cache.get('rivers');
   if (!rivers) {
@@ -177,6 +198,26 @@ app.get('/api/state-breakdown', async (req, res) => {
     cache.set('states', states);
   }
   res.json(states);
+});
+
+app.get('/api/weather', async (req, res) => {
+  const { lat, lon } = req.query;
+  if (!lat || !lon) {
+    return res.status(400).json({ error: 'Missing lat or lon query parameters' });
+  }
+  try {
+    // Cache weather for 10 minutes as well (optional)
+    const cacheKey = `weather_${lat}_${lon}`;
+    let weather = cache.get(cacheKey);
+    if (!weather) {
+      weather = await fetchWeatherFromWWO(lat, lon);
+      cache.set(cacheKey, weather);
+    }
+    res.json(weather);
+  } catch (error) {
+    console.error('Weather endpoint error:', error.message);
+    res.status(502).json({ error: 'Failed to fetch weather data' });
+  }
 });
 
 app.get('/', (req, res) => {
