@@ -213,7 +213,7 @@ async function fetchWeatherFromWWO(lat, lon) {
 }
 
 // ------------------- API ENDPOINTS -------------------
-app.get('/api/river-status', async (req, res) => {
+app.get('/river-status', async (req, res) => {
   let rivers = cache.get('rivers');
   if (!rivers) {
     rivers = await scrapeRiverStatus();
@@ -222,7 +222,7 @@ app.get('/api/river-status', async (req, res) => {
   res.json({ rivers });
 });
 
-app.get('/api/risk-summary', async (req, res) => {
+app.get('/risk-summary', async (req, res) => {
   let summary = cache.get('summary');
   if (!summary) {
     summary = await scrapeRiskSummary();
@@ -231,7 +231,7 @@ app.get('/api/risk-summary', async (req, res) => {
   res.json(summary);
 });
 
-app.get('/api/communities', async (req, res) => {
+app.get('/communities', async (req, res) => {
   let communities = cache.get('communities');
   if (!communities) {
     communities = await scrapeCriticalCommunities();
@@ -240,7 +240,7 @@ app.get('/api/communities', async (req, res) => {
   res.json({ communities });
 });
 
-app.get('/api/state-breakdown', async (req, res) => {
+app.get('/state-breakdown', async (req, res) => {
   let states = cache.get('states');
   if (!states) {
     states = await scrapeStateBreakdown();
@@ -249,7 +249,7 @@ app.get('/api/state-breakdown', async (req, res) => {
   res.json(states);
 });
 
-app.get('/api/weather', async (req, res) => {
+app.get('/weather', async (req, res) => {
   const { lat, lon } = req.query;
   if (!lat || !lon) {
     return res.status(400).json({ error: 'Missing lat or lon' });
@@ -269,7 +269,7 @@ app.get('/api/weather', async (req, res) => {
 });
 
 // Test endpoint to check if the website is reachable
-app.get('/api/test', async (req, res) => {
+app.get('/test', async (req, res) => {
   const html = await fetchHTML('https://www.fewsnigeria.com.ng');
   if (html) {
     res.json({ status: 'ok', htmlLength: html.length });
