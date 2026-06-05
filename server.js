@@ -1,4 +1,6 @@
-// server.js - Enhanced with better logging and User-Agent
+// server.js – FEWS Nigeria Backend
+// Weather powered by Open-Meteo (free, no API key required)
+
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -10,8 +12,6 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 
 const cache = new NodeCache({ stdTTL: 600 });
-
-const WWO_API_KEY = process.env.WWO_API_KEY;
 
 // Custom axios instance with proper headers to avoid blocking
 const http = axios.create({
@@ -38,7 +38,6 @@ async function fetchHTML(url) {
 app.get('/test-scrape', async (req, res) => {
   const html = await fetchHTML('https://www.fewsnigeria.com.ng');
   if (html) {
-    // Send first 2000 chars for inspection
     res.send(`<pre>${html.substring(0, 2000)}</pre>`);
   } else {
     res.status(500).send('Cannot fetch website');
@@ -49,14 +48,12 @@ app.get('/test-scrape', async (req, res) => {
 async function scrapeRiverStatus() {
   const html = await fetchHTML('https://www.fewsnigeria.com.ng');
   if (!html) return getFallbackRivers();
-  
+
   const $ = cheerio.load(html);
   let rivers = [];
-  
-  // Log all tables found
+
   console.log(`Found ${$('table').length} tables on page`);
-  
-  // Try to find any table with river-like content
+
   $('table').each((idx, table) => {
     const rows = $(table).find('tr');
     rows.each((i, row) => {
@@ -72,9 +69,8 @@ async function scrapeRiverStatus() {
       }
     });
   });
-  
+
   if (rivers.length === 0) {
-    // Try to find divs or other structures
     $('.river-item, .water-level').each((i, el) => {
       const name = $(el).find('.name').text().trim();
       const level = $(el).find('.level').text().trim();
@@ -83,10 +79,10 @@ async function scrapeRiverStatus() {
       if (name) rivers.push({ name, level, trend, risk });
     });
   }
-  
+
   console.log(`Scraped ${rivers.length} river entries`);
   if (rivers.length === 0) return getFallbackRivers();
-  return rivers.slice(0, 10); // limit
+  return rivers.slice(0, 10);
 }
 
 function getFallbackRivers() {
@@ -102,20 +98,19 @@ function getFallbackRivers() {
 async function scrapeRiskSummary() {
   const html = await fetchHTML('https://www.fewsnigeria.com.ng');
   if (!html) return getFallbackSummary();
-  
-  // Look for numbers using regex
+
   const totalMatch = html.match(/(\d{1,4}(?:,\d{3})*)\s*(?:communities|total)/i);
   const criticalMatch = html.match(/(\d{1,3})\s*(?:critical|severe)/i);
   const highMatch = html.match(/(\d{1,3})\s*high\s*risk/i);
   const moderateMatch = html.match(/(\d{1,3})\s*moderate/i);
   const avgMatch = html.match(/(\d{1,2})\/100/i);
-  
-  const total = totalMatch ? parseInt(totalMatch[1].replace(/,/g,'')) : 2000;
+
+  const total = totalMatch ? parseInt(totalMatch[1].replace(/,/g, '')) : 2000;
   const critical = criticalMatch ? parseInt(criticalMatch[1]) : 914;
   const high = highMatch ? parseInt(highMatch[1]) : 430;
   const moderate = moderateMatch ? parseInt(moderateMatch[1]) : 656;
   const avg = avgMatch ? parseInt(avgMatch[1]) : 76;
-  
+
   console.log(`Risk summary: total=${total}, critical=${critical}, high=${high}, moderate=${moderate}, avg=${avg}`);
   return { totalCommunities: total, criticalCount: critical, highCount: high, moderateCount: moderate, avgRiskScore: avg };
 }
@@ -134,11 +129,10 @@ function getFallbackSummary() {
 async function scrapeCriticalCommunities() {
   const html = await fetchHTML('https://www.fewsnigeria.com.ng');
   if (!html) return getFallbackCommunities();
-  
+
   const $ = cheerio.load(html);
   let communities = [];
-  
-  // Try common patterns
+
   $('.community, .card, .item, li').each((i, el) => {
     const text = $(el).text();
     if (text.includes('Port Harcourt') || text.includes('Okrika') || text.includes('Bonny') || text.includes('Warri')) {
@@ -146,7 +140,7 @@ async function scrapeCriticalCommunities() {
       communities.push({
         id: i.toString(),
         name: name,
-        state: 'Rivers', // default
+        state: 'Rivers',
         lga: '',
         riskScore: 100,
         weather: 'N/A',
@@ -154,7 +148,7 @@ async function scrapeCriticalCommunities() {
       });
     }
   });
-  
+
   if (communities.length === 0) return getFallbackCommunities();
   console.log(`Scraped ${communities.length} communities`);
   return communities;
@@ -173,7 +167,6 @@ function getFallbackCommunities() {
 
 // ------------------- STATE BREAKDOWN -------------------
 async function scrapeStateBreakdown() {
-  // For now return fallback; we can improve later
   return {
     critical: ['Abia', 'Akwa Ibom', 'Anambra', 'Bayelsa', 'Benue', 'Cross River', 'Delta', 'Ebonyi', 'Edo', 'Ekiti', 'Enugu', 'Imo', 'Lagos', 'Ogun', 'Ondo', 'Osun', 'Oyo', 'Rivers'],
     high: ['Adamawa', 'Kebbi', 'Kogi', 'Kwara', 'Niger', 'Taraba'],
@@ -181,22 +174,52 @@ async function scrapeStateBreakdown() {
   };
 }
 
-// ------------------- WEATHER -------------------
-async function fetchWeatherFromWWO(lat, lon) {
-  if (!WWO_API_KEY) throw new Error('Weather API key missing');
-  const url = `https://api.worldweatheronline.com/premium/v1/weather.ashx?key=${WWO_API_KEY}&q=${lat},${lon}&format=json&num_of_days=1`;
+// ------------------- WEATHER (Open-Meteo – free, no API key) -------------------
+async function fetchWeatherFromOpenMeteo(lat, lon) {
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,weather_code&wind_speed_unit=kmh&timezone=auto`;
+
   const response = await axios.get(url);
-  const current = response.data.data.current_condition[0];
+  const current = response.data.current;
+
+  // WMO weather interpretation codes → human-readable description
+  const weatherDescriptions = {
+    0: 'Clear sky',
+    1: 'Mainly clear',
+    2: 'Partly cloudy',
+    3: 'Overcast',
+    45: 'Foggy',
+    48: 'Icy fog',
+    51: 'Light drizzle',
+    53: 'Drizzle',
+    55: 'Heavy drizzle',
+    61: 'Light rain',
+    63: 'Rain',
+    65: 'Heavy rain',
+    71: 'Light snow',
+    73: 'Snow',
+    75: 'Heavy snow',
+    80: 'Light showers',
+    81: 'Showers',
+    82: 'Heavy showers',
+    95: 'Thunderstorm',
+    96: 'Thunderstorm with hail',
+    99: 'Thunderstorm with heavy hail',
+  };
+
+  // Convert wind degrees to compass direction
+  const windDirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  const windDir = windDirs[Math.round(current.wind_direction_10m / 45) % 8];
+
   return {
-    temp: `${current.temp_C}°C`,
-    condition: current.weatherDesc[0].value,
-    humidity: `${current.humidity}%`,
-    feelsLike: `${current.FeelsLikeC}°C`,
-    wind: `${current.winddir16Point} ${current.windspeedKmph} km/h`,
+    temp: `${current.temperature_2m}°C`,
+    condition: weatherDescriptions[current.weather_code] || 'Unknown',
+    humidity: `${current.relative_humidity_2m}%`,
+    feelsLike: `${current.apparent_temperature}°C`,
+    wind: `${windDir} ${current.wind_speed_10m} km/h`,
   };
 }
 
-// ------------------- API ENDPOINTS (no /api prefix) -------------------
+// ------------------- API ENDPOINTS -------------------
 app.get('/river-status', async (req, res) => {
   let rivers = cache.get('rivers');
   if (!rivers) {
@@ -240,7 +263,7 @@ app.get('/weather', async (req, res) => {
     const cacheKey = `weather_${lat}_${lon}`;
     let weather = cache.get(cacheKey);
     if (!weather) {
-      weather = await fetchWeatherFromWWO(lat, lon);
+      weather = await fetchWeatherFromOpenMeteo(lat, lon);
       cache.set(cacheKey, weather);
     }
     res.json(weather);
