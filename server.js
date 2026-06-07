@@ -151,24 +151,49 @@ async function scrapeCriticalCommunities() {
     console.log(`Communities page: found ${tables.length} tables`);
 
     tables.each((tIdx, table) => {
-      // Detect columns from header row
+      // Log all header cells so we can see the exact column names in Render logs
+      const headerCells = [];
+      $(table).find('tr').first().find('th, td').each((ci, cell) => {
+        headerCells.push(`[${ci}]="${$(cell).text().trim()}"`);
+      });
+      console.log(`Table ${tIdx} headers: ${headerCells.join(', ')}`);
+
+      // Detect columns from header text
       let colState = -1, colLga = -1, colCommunity = -1, colRisk = -1, colScore = -1;
 
       $(table).find('tr').first().find('th, td').each((ci, cell) => {
         const h = $(cell).text().toLowerCase().trim();
-        if      (h.includes('state'))                                                  colState     = ci;
-        else if (h.includes('lga'))                                                    colLga       = ci;
-        else if (h.includes('community') || h.includes('name') || h.includes('town')) colCommunity = ci;
-        else if (h.includes('risk') || h.includes('level') || h.includes('status'))   colRisk      = ci;
-        else if (h.includes('score') || h.includes('index') || h.includes('value'))   colScore     = ci;
+        if      (h.includes('state'))                                                       colState     = ci;
+        else if (h.includes('lga'))                                                         colLga       = ci;
+        else if (h.includes('community') || h.includes('name') || h.includes('town')
+               || h.includes('ward')    || h.includes('settlement'))                        colCommunity = ci;
+        else if (h.includes('risk') || h.includes('level') || h.includes('status')
+               || h.includes('category') || h.includes('class'))                            colRisk      = ci;
+        else if (h.includes('score') || h.includes('index') || h.includes('value')
+               || h.includes('rank') || h.includes('priority') || h.includes('flood'))     colScore     = ci;
       });
 
-      // Positional defaults if headers not found
+      console.log(`Table ${tIdx} detected cols — state:${colState} lga:${colLga} community:${colCommunity} risk:${colRisk} score:${colScore}`);
+
+      // Smart positional defaults based on total column count
+      const totalCols = $(table).find('tr').first().find('th, td').length;
+      console.log(`Table ${tIdx} total columns: ${totalCols}`);
+
       if (colState     < 0) colState     = 0;
       if (colLga       < 0) colLga       = 1;
-      if (colCommunity < 0) colCommunity = 2;
-      if (colRisk      < 0) colRisk      = 3;
-      if (colScore     < 0) colScore     = 4;
+      if (colScore     < 0) colScore     = 2;  // score/index often col 2
+      if (colRisk      < 0) colRisk      = 3;  // risk label often col 3
+      if (colCommunity < 0) {
+        // Community name is whichever large-text column remains
+        // Try cols 4, 5, then fall back to col 2
+        const usedCols = new Set([colState, colLga, colScore, colRisk]);
+        for (let c = 4; c < totalCols; c++) {
+          if (!usedCols.has(c)) { colCommunity = c; break; }
+        }
+        if (colCommunity < 0) colCommunity = colLga; // absolute fallback
+      }
+
+      console.log(`Table ${tIdx} final cols — state:${colState} lga:${colLga} community:${colCommunity} risk:${colRisk} score:${colScore}`);
 
       $(table).find('tr').each((rIdx, row) => {
         if (rIdx === 0) return; // skip header
@@ -177,16 +202,20 @@ async function scrapeCriticalCommunities() {
 
         const state     = $(cols[colState])?.text().trim()     || '';
         const lga       = $(cols[colLga])?.text().trim()       || '';
-        const name      = $(cols[colCommunity])?.text().trim() || '';
+        const nameRaw   = $(cols[colCommunity])?.text().trim() || '';
         const riskText  = $(cols[colRisk])?.text().trim()      || '';
-        const scoreText = $(cols[colScore])?.text().trim()      || '';
+        const scoreText = $(cols[colScore])?.text().trim()     || '';
 
-        if (!name && !lga) return;
+        if (!nameRaw && !lga && !state) return;
+
+        // Reject if the "name" looks like a pure number — means we have wrong column
+        const isNumber = /^\d+(\.\d+)?$/.test(nameRaw);
+        const displayName = (!isNumber && nameRaw) ? nameRaw : lga || state;
 
         const score = parseRiskScore(riskText, scoreText);
         communities.push({
           id:        `${tIdx}_${rIdx}`,
-          name:      name || lga,
+          name:      displayName,
           state,
           lga,
           riskScore: score,
