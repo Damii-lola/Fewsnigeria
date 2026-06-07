@@ -34,7 +34,7 @@ async function fetchHTML(url) {
   }
 }
 
-// ─── DEBUG endpoints ─────────────────────────────────────────
+// DEBUG endpoints
 app.get('/test-scrape', async (req, res) => {
   const url = req.query.url || 'https://www.fewsnigeria.com.ng';
   const html = await fetchHTML(url);
@@ -48,15 +48,13 @@ app.get('/test-communities-raw', async (req, res) => {
   else res.status(500).send('Cannot fetch communities page');
 });
 
-// ─── RIVER STATUS ────────────────────────────────────────────
+// RIVER STATUS
 async function scrapeRiverStatus() {
   const html = await fetchHTML('https://www.fewsnigeria.com.ng');
   if (!html) return getFallbackRivers();
-
   const $ = cheerio.load(html);
   let rivers = [];
   console.log(`Found ${$('table').length} tables on page`);
-
   $('table').each((idx, table) => {
     $(table).find('tr').each((i, row) => {
       const cols = $(row).find('td');
@@ -71,17 +69,6 @@ async function scrapeRiverStatus() {
       }
     });
   });
-
-  if (rivers.length === 0) {
-    $('.river-item, .water-level').each((i, el) => {
-      const name  = $(el).find('.name').text().trim();
-      const level = $(el).find('.level').text().trim();
-      const trend = $(el).find('.trend').text().trim();
-      const risk  = $(el).find('.risk').text().trim();
-      if (name) rivers.push({ name, level, trend, risk });
-    });
-  }
-
   console.log(`Scraped ${rivers.length} river entries`);
   if (rivers.length === 0) return getFallbackRivers();
   return rivers.slice(0, 10);
@@ -96,23 +83,20 @@ function getFallbackRivers() {
   ];
 }
 
-// ─── RISK SUMMARY ────────────────────────────────────────────
+// RISK SUMMARY
 async function scrapeRiskSummary() {
   const html = await fetchHTML('https://www.fewsnigeria.com.ng');
   if (!html) return getFallbackSummary();
-
   const totalMatch    = html.match(/(\d{1,4}(?:,\d{3})*)\s*(?:communities|total)/i);
   const criticalMatch = html.match(/(\d{1,3})\s*(?:critical|severe)/i);
   const highMatch     = html.match(/(\d{1,3})\s*high\s*risk/i);
   const moderateMatch = html.match(/(\d{1,3})\s*moderate/i);
   const avgMatch      = html.match(/(\d{1,2})\/100/i);
-
   const total    = totalMatch    ? parseInt(totalMatch[1].replace(/,/g, '')) : 2000;
   const critical = criticalMatch ? parseInt(criticalMatch[1])                : 914;
   const high     = highMatch     ? parseInt(highMatch[1])                    : 430;
   const moderate = moderateMatch ? parseInt(moderateMatch[1])                : 656;
   const avg      = avgMatch      ? parseInt(avgMatch[1])                     : 76;
-
   console.log(`Risk summary: total=${total}, critical=${critical}, high=${high}, moderate=${moderate}, avg=${avg}`);
   return { totalCommunities: total, criticalCount: critical, highCount: high, moderateCount: moderate, avgRiskScore: avg };
 }
@@ -121,10 +105,10 @@ function getFallbackSummary() {
   return { totalCommunities: 2000, criticalCount: 914, highCount: 430, moderateCount: 656, avgRiskScore: 76 };
 }
 
-// ─── COMMUNITIES ─────────────────────────────────────────────
+// COMMUNITIES
 function parseRiskScore(rawRisk, rawScore) {
   const num = parseInt(rawScore);
-  if (!isNaN(num) && num > 0) return num;
+  if (!isNaN(num) && num > 0) return Math.min(num, 100);
   const r = (rawRisk || '').toLowerCase();
   if (r.includes('critical') || r.includes('severe') || r.includes('extreme')) return 92;
   if (r.includes('high'))     return 75;
@@ -140,8 +124,19 @@ function scoreToAction(score) {
   return 'Monitor Situation';
 }
 
+const RISK_WORDS = new Set(['critical','high','moderate','low','severe','extreme','evacuate','emergency','n/a','na','nil','none']);
+
+function isJunkName(raw) {
+  if (!raw) return true;
+  const s = raw.toLowerCase().trim();
+  if (/^\d+(\.\d+)?$/.test(s)) return true;
+  if (/^(critical|high|moderate|low|severe|extreme|evacuate|emergency)(\s*[·•\-]\s*\d+)?$/i.test(s)) return true;
+  if (/^[^a-z0-9]+$/i.test(s)) return true;
+  if (s.length < 2) return true;
+  return false;
+}
+
 async function scrapeCriticalCommunities() {
-  // PRIMARY: the WWO flood LGA risk table page
   const html = await fetchHTML('https://www.fewsnigeria.com.ng/floodmap/wwo_flood_lga@risk.php');
 
   if (html) {
@@ -151,45 +146,52 @@ async function scrapeCriticalCommunities() {
     console.log(`Communities page: found ${tables.length} tables`);
 
     tables.each((tIdx, table) => {
-      // Log all header cells so we can see the exact column names in Render logs
+      // Log headers
       const headerCells = [];
       $(table).find('tr').first().find('th, td').each((ci, cell) => {
         headerCells.push(`[${ci}]="${$(cell).text().trim()}"`);
       });
       console.log(`Table ${tIdx} headers: ${headerCells.join(', ')}`);
 
-      // Detect columns from header text
-      let colState = -1, colLga = -1, colCommunity = -1, colRisk = -1, colScore = -1;
+      // Detect if this is a SUMMARY table (has community count col but no LGA col)
+      let hasCommunityCountCol = false;
+      let hasLgaCol = false;
+      $(table).find('tr').first().find('th, td').each((ci, cell) => {
+        const h = $(cell).text().toLowerCase().trim();
+        if (h === 'communities' || h === 'no. of communities' || h === 'community count') hasCommunityCountCol = true;
+        if (h === 'lga' || h.startsWith('lga ') || h === 'local government') hasLgaCol = true;
+      });
+
+      if (hasCommunityCountCol && !hasLgaCol) {
+        console.log(`Table ${tIdx} — summary table, skipping`);
+        return;
+      }
+
+      // Detect columns — score BEFORE risk to prevent "Risk Score" hitting colRisk
+      let colSN = -1, colState = -1, colLga = -1, colCommunity = -1, colRisk = -1, colScore = -1;
 
       $(table).find('tr').first().find('th, td').each((ci, cell) => {
         const h = $(cell).text().toLowerCase().trim();
-        // ORDER MATTERS: more specific matches first to avoid "Risk Score" hitting colRisk
-        if      (h === 'state' || (h.includes('state') && !h.includes('risk')))                    colState     = ci;
-        else if (h === 'lga'   || h.startsWith('lga'))                                              colLga       = ci;
-        else if (h.includes('community') || h === 'name' || h.includes('town')
-               || h.includes('ward')     || h.includes('settlement'))                               colCommunity = ci;
-        // Check "risk score" / "avg score" / "flood score" BEFORE plain "risk level"
-        else if (h.includes('score') || h.includes('avg') || h.includes('index')
-               || h.includes('value') || h.includes('priority'))                                    colScore     = ci;
-        // Plain risk level / category — must NOT already be captured as score
-        else if (h.includes('risk') || h.includes('level') || h.includes('status')
-               || h.includes('category') || h.includes('class'))                                    colRisk      = ci;
+        if      (h === 's/n' || h === 'sn' || h === 'rank' || h === 'no' || h === '#') colSN        = ci;
+        else if (h === 'state' || h === 'state name')                                    colState     = ci;
+        else if (h === 'lga' || h === 'lga name' || h.startsWith('local gov'))          colLga       = ci;
+        else if (h === 'community name' || h === 'community' || h === 'town'
+               || h === 'name' || h.includes('settlement'))                              colCommunity = ci;
+        // score BEFORE risk
+        else if (h === 'risk score' || h === 'avg score' || h === 'score'
+               || h.includes('flood score') || h === 'index')                            colScore     = ci;
+        else if (h === 'risk level' || h === 'risk' || h === 'risk status'
+               || h === 'level' || h === 'category')                                     colRisk      = ci;
       });
 
-      console.log(`Table ${tIdx} detected cols — state:${colState} lga:${colLga} community:${colCommunity} risk:${colRisk} score:${colScore}`);
-
-      // Smart positional defaults — handle S/N or Rank in col 0
-      const totalCols = $(table).find('tr').first().find('th, td').length;
-      const firstHeader = $(table).find('tr').first().find('th, td').first().text().toLowerCase().trim();
-      const hasSerialCol = firstHeader.includes('s/n') || firstHeader.includes('rank') || firstHeader.includes('no') || firstHeader === '#';
-
-      const offset = hasSerialCol ? 1 : 0; // skip S/N or Rank column
-
-      if (colState     < 0) colState     = offset + 0; // State
-      if (colLga       < 0) colLga       = offset + 1; // LGA
-      if (colCommunity < 0) colCommunity = offset + 2; // Community Name
-      if (colRisk      < 0) colRisk      = offset + 3; // Risk Level
-      if (colScore     < 0) colScore     = offset + 4; // Risk Score
+      // Positional defaults using known Table 1 layout:
+      // [0]=S/N [1]=State [2]=LGA [3]=Community Name [4]=Risk Level [5]=Risk Score
+      const offset = colSN >= 0 ? 1 : 0;
+      if (colState     < 0) colState     = offset + 0;
+      if (colLga       < 0) colLga       = offset + 1;
+      if (colCommunity < 0) colCommunity = offset + 2;
+      if (colRisk      < 0) colRisk      = offset + 3;
+      if (colScore     < 0) colScore     = offset + 4;
 
       console.log(`Table ${tIdx} final cols — state:${colState} lga:${colLga} community:${colCommunity} risk:${colRisk} score:${colScore}`);
 
@@ -201,22 +203,33 @@ async function scrapeCriticalCommunities() {
         const state     = $(cols[colState])?.text().trim()     || '';
         const lga       = $(cols[colLga])?.text().trim()       || '';
         const nameRaw   = $(cols[colCommunity])?.text().trim() || '';
-        const riskText  = $(cols[colRisk])?.text().trim()      || '';  // text label e.g. "High"
-        const scoreText = $(cols[colScore])?.text().trim()     || '';  // numeric e.g. "84"
+        const riskText  = $(cols[colRisk])?.text().trim()      || '';
+        const scoreText = $(cols[colScore])?.text().trim()     || '';
 
-        if (!nameRaw && !lga && !state) return;
+        if (!state && !lga && !nameRaw) return;
 
-        // Reject if the "name" is a pure number — wrong column, use LGA fallback
-        const isNumber = /^\d+(\.\d+)?$/.test(nameRaw);
-        const displayName = (!isNumber && nameRaw) ? nameRaw : lga || state;
+        // Clean "· 42" or "• 42" count suffixes from state/lga first
+        const cleanState = state.replace(/[·•]\s*\d+/g, '').trim();
+        const cleanLga   = lga.replace(/[·•]\s*\d+/g, '').trim();
 
-        // For score: prefer the numeric col, fall back to text label
+        // Validate name — use isJunkName() which catches numbers, risk labels,
+        // "Critical · 42" style strings, pure punctuation etc.
+        const displayName = !isJunkName(nameRaw)
+          ? nameRaw
+          : !isJunkName(cleanLga)
+            ? cleanLga
+            : !isJunkName(cleanState)
+              ? cleanState
+              : null;
+
+        if (!displayName) return; // skip rows with no usable name at all
+
         const score = parseRiskScore(riskText, scoreText);
         communities.push({
           id:        `${tIdx}_${rIdx}`,
           name:      displayName,
-          state,
-          lga,
+          state:     cleanState,
+          lga:       cleanLga,
           riskScore: score,
           weather:   'N/A',
           action:    scoreToAction(score),
@@ -224,31 +237,20 @@ async function scrapeCriticalCommunities() {
       });
     });
 
-    // If table parse returned nothing, try div/list layout
-    if (communities.length === 0) {
-      console.log('Table parse 0 results — trying div/list fallback');
-      const statePattern = /\b(Abia|Adamawa|Akwa Ibom|Anambra|Bauchi|Bayelsa|Benue|Borno|Cross River|Delta|Ebonyi|Edo|Ekiti|Enugu|FCT|Gombe|Imo|Jigawa|Kaduna|Kano|Katsina|Kebbi|Kogi|Kwara|Lagos|Nasarawa|Niger|Ogun|Ondo|Osun|Oyo|Plateau|Rivers|Sokoto|Taraba|Yobe|Zamfara)\b/i;
-      $('[class*="community"],[class*="lga"],[class*="flood"],[class*="risk"],li,.item').each((i, el) => {
-        const text = $(el).text().trim();
-        if (text.length < 3 || text.length > 200) return;
-        const stateMatch = text.match(statePattern);
-        communities.push({
-          id:        i.toString(),
-          name:      text.split('\n')[0].trim().substring(0, 80),
-          state:     stateMatch ? stateMatch[1] : '',
-          lga:       '',
-          riskScore: 70,
-          weather:   'N/A',
-          action:    'Take Action',
-        });
-      });
-    }
-
     console.log(`Scraped ${communities.length} communities from WWO flood map`);
 
     if (communities.length > 0) {
-      communities.sort((a, b) => b.riskScore - a.riskScore);
-      return communities; // ALL communities, no slice
+      // Deduplicate
+      const seen = new Set();
+      const unique = communities.filter(c => {
+        const key = `${c.name}|${c.state}|${c.lga}`.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      unique.sort((a, b) => b.riskScore - a.riskScore);
+      console.log(`Returning ${unique.length} unique communities`);
+      return unique;
     }
   }
 
@@ -291,7 +293,7 @@ function getFallbackCommunities() {
   ];
 }
 
-// ─── STATE BREAKDOWN ─────────────────────────────────────────
+// STATE BREAKDOWN
 async function scrapeStateBreakdown() {
   return {
     critical: ['Abia','Akwa Ibom','Anambra','Bayelsa','Benue','Cross River','Delta','Ebonyi','Edo','Ekiti','Enugu','Imo','Lagos','Ogun','Ondo','Osun','Oyo','Rivers'],
@@ -300,7 +302,7 @@ async function scrapeStateBreakdown() {
   };
 }
 
-// ─── WEATHER ─────────────────────────────────────────────────
+// WEATHER
 async function fetchWeatherFromOpenMeteo(lat, lon) {
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,weather_code&wind_speed_unit=kmh&timezone=auto`;
   const response = await axios.get(url);
@@ -316,7 +318,7 @@ async function fetchWeatherFromOpenMeteo(lat, lon) {
   };
 }
 
-// ─── ENDPOINTS ───────────────────────────────────────────────
+// ENDPOINTS
 app.get('/river-status', async (req, res) => {
   let d = cache.get('rivers');
   if (!d) { d = await scrapeRiverStatus(); cache.set('rivers', d); }
