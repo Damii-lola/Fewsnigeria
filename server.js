@@ -1,5 +1,6 @@
 // server.js – FEWS Nigeria Backend
-// Weather powered by Open-Meteo (free, no API key required)
+// Weather: Open-Meteo (free, no API key)
+// Communities: scraped from fewsnigeria.com.ng/floodmap/wwo_flood_lga@risk.php
 
 const express = require('express');
 const cors = require('cors');
@@ -13,14 +14,13 @@ app.use(cors());
 
 const cache = new NodeCache({ stdTTL: 600 });
 
-// Custom axios instance with proper headers to avoid blocking
 const http = axios.create({
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.5',
   },
-  timeout: 15000,
+  timeout: 30000,
 });
 
 async function fetchHTML(url) {
@@ -34,35 +34,37 @@ async function fetchHTML(url) {
   }
 }
 
-// Test endpoint to see raw HTML
+// ─── DEBUG endpoints ─────────────────────────────────────────
 app.get('/test-scrape', async (req, res) => {
-  const html = await fetchHTML('https://www.fewsnigeria.com.ng');
-  if (html) {
-    res.send(`<pre>${html.substring(0, 2000)}</pre>`);
-  } else {
-    res.status(500).send('Cannot fetch website');
-  }
+  const url = req.query.url || 'https://www.fewsnigeria.com.ng';
+  const html = await fetchHTML(url);
+  if (html) res.send(`<pre>${html.substring(0, 5000)}</pre>`);
+  else res.status(500).send('Cannot fetch website');
 });
 
-// ------------------- RIVER STATUS -------------------
+app.get('/test-communities-raw', async (req, res) => {
+  const html = await fetchHTML('https://www.fewsnigeria.com.ng/floodmap/wwo_flood_lga@risk.php');
+  if (html) res.send(`<pre>${html.substring(0, 10000)}</pre>`);
+  else res.status(500).send('Cannot fetch communities page');
+});
+
+// ─── RIVER STATUS ────────────────────────────────────────────
 async function scrapeRiverStatus() {
   const html = await fetchHTML('https://www.fewsnigeria.com.ng');
   if (!html) return getFallbackRivers();
 
   const $ = cheerio.load(html);
   let rivers = [];
-
   console.log(`Found ${$('table').length} tables on page`);
 
   $('table').each((idx, table) => {
-    const rows = $(table).find('tr');
-    rows.each((i, row) => {
+    $(table).find('tr').each((i, row) => {
       const cols = $(row).find('td');
       if (cols.length >= 4) {
-        const name = $(cols[0]).text().trim();
+        const name  = $(cols[0]).text().trim();
         const level = $(cols[1]).text().trim();
         const trend = $(cols[2]).text().trim();
-        const risk = $(cols[3]).text().trim();
+        const risk  = $(cols[3]).text().trim();
         if (name && (level.includes('m') || trend.includes('↑'))) {
           rivers.push({ name, level, trend, risk });
         }
@@ -72,10 +74,10 @@ async function scrapeRiverStatus() {
 
   if (rivers.length === 0) {
     $('.river-item, .water-level').each((i, el) => {
-      const name = $(el).find('.name').text().trim();
+      const name  = $(el).find('.name').text().trim();
       const level = $(el).find('.level').text().trim();
       const trend = $(el).find('.trend').text().trim();
-      const risk = $(el).find('.risk').text().trim();
+      const risk  = $(el).find('.risk').text().trim();
       if (name) rivers.push({ name, level, trend, risk });
     });
   }
@@ -87,194 +89,243 @@ async function scrapeRiverStatus() {
 
 function getFallbackRivers() {
   return [
-    { name: 'Niger (Lokoja)', level: '9.15m', trend: '↑ Rising', risk: 'Severe' },
+    { name: 'Niger (Lokoja)',  level: '9.15m', trend: '↑ Rising', risk: 'Severe' },
     { name: 'Benue (Makurdi)', level: '9.85m', trend: '↑ Rising', risk: 'Severe' },
-    { name: 'Kaduna', level: '5.20m', trend: '↑ Rising', risk: 'High' },
-    { name: 'Cross River', level: '3.45m', trend: '↑ Rising', risk: 'High' },
+    { name: 'Kaduna',          level: '5.20m', trend: '↑ Rising', risk: 'High' },
+    { name: 'Cross River',     level: '3.45m', trend: '↑ Rising', risk: 'High' },
   ];
 }
 
-// ------------------- RISK SUMMARY -------------------
+// ─── RISK SUMMARY ────────────────────────────────────────────
 async function scrapeRiskSummary() {
   const html = await fetchHTML('https://www.fewsnigeria.com.ng');
   if (!html) return getFallbackSummary();
 
-  const totalMatch = html.match(/(\d{1,4}(?:,\d{3})*)\s*(?:communities|total)/i);
+  const totalMatch    = html.match(/(\d{1,4}(?:,\d{3})*)\s*(?:communities|total)/i);
   const criticalMatch = html.match(/(\d{1,3})\s*(?:critical|severe)/i);
-  const highMatch = html.match(/(\d{1,3})\s*high\s*risk/i);
+  const highMatch     = html.match(/(\d{1,3})\s*high\s*risk/i);
   const moderateMatch = html.match(/(\d{1,3})\s*moderate/i);
-  const avgMatch = html.match(/(\d{1,2})\/100/i);
+  const avgMatch      = html.match(/(\d{1,2})\/100/i);
 
-  const total = totalMatch ? parseInt(totalMatch[1].replace(/,/g, '')) : 2000;
-  const critical = criticalMatch ? parseInt(criticalMatch[1]) : 914;
-  const high = highMatch ? parseInt(highMatch[1]) : 430;
-  const moderate = moderateMatch ? parseInt(moderateMatch[1]) : 656;
-  const avg = avgMatch ? parseInt(avgMatch[1]) : 76;
+  const total    = totalMatch    ? parseInt(totalMatch[1].replace(/,/g, '')) : 2000;
+  const critical = criticalMatch ? parseInt(criticalMatch[1])                : 914;
+  const high     = highMatch     ? parseInt(highMatch[1])                    : 430;
+  const moderate = moderateMatch ? parseInt(moderateMatch[1])                : 656;
+  const avg      = avgMatch      ? parseInt(avgMatch[1])                     : 76;
 
   console.log(`Risk summary: total=${total}, critical=${critical}, high=${high}, moderate=${moderate}, avg=${avg}`);
   return { totalCommunities: total, criticalCount: critical, highCount: high, moderateCount: moderate, avgRiskScore: avg };
 }
 
 function getFallbackSummary() {
-  return {
-    totalCommunities: 2000,
-    criticalCount: 914,
-    highCount: 430,
-    moderateCount: 656,
-    avgRiskScore: 76,
-  };
+  return { totalCommunities: 2000, criticalCount: 914, highCount: 430, moderateCount: 656, avgRiskScore: 76 };
 }
 
-// ------------------- CRITICAL COMMUNITIES -------------------
+// ─── COMMUNITIES ─────────────────────────────────────────────
+function parseRiskScore(rawRisk, rawScore) {
+  const num = parseInt(rawScore);
+  if (!isNaN(num) && num > 0) return num;
+  const r = (rawRisk || '').toLowerCase();
+  if (r.includes('critical') || r.includes('severe') || r.includes('extreme')) return 92;
+  if (r.includes('high'))     return 75;
+  if (r.includes('moderate')) return 55;
+  if (r.includes('low'))      return 25;
+  return 50;
+}
+
+function scoreToAction(score) {
+  if (score >= 85) return 'Evacuate Now';
+  if (score >= 70) return 'Take Action';
+  if (score >= 50) return 'Be Prepared';
+  return 'Monitor Situation';
+}
+
 async function scrapeCriticalCommunities() {
-  const html = await fetchHTML('https://www.fewsnigeria.com.ng');
-  if (!html) return getFallbackCommunities();
+  // PRIMARY: the WWO flood LGA risk table page
+  const html = await fetchHTML('https://www.fewsnigeria.com.ng/floodmap/wwo_flood_lga@risk.php');
 
-  const $ = cheerio.load(html);
-  let communities = [];
+  if (html) {
+    const $ = cheerio.load(html);
+    const communities = [];
+    const tables = $('table');
+    console.log(`Communities page: found ${tables.length} tables`);
 
-  $('.community, .card, .item, li').each((i, el) => {
-    const text = $(el).text();
-    if (text.includes('Port Harcourt') || text.includes('Okrika') || text.includes('Bonny') || text.includes('Warri')) {
-      const name = $(el).find('h3, h4, strong, .title').first().text().trim() || $(el).text().slice(0, 50);
-      communities.push({
-        id: i.toString(),
-        name: name,
-        state: 'Rivers',
-        lga: '',
-        riskScore: 100,
-        weather: 'N/A',
-        action: 'Evacuate Now',
+    tables.each((tIdx, table) => {
+      // Detect columns from header row
+      let colState = -1, colLga = -1, colCommunity = -1, colRisk = -1, colScore = -1;
+
+      $(table).find('tr').first().find('th, td').each((ci, cell) => {
+        const h = $(cell).text().toLowerCase().trim();
+        if      (h.includes('state'))                                                  colState     = ci;
+        else if (h.includes('lga'))                                                    colLga       = ci;
+        else if (h.includes('community') || h.includes('name') || h.includes('town')) colCommunity = ci;
+        else if (h.includes('risk') || h.includes('level') || h.includes('status'))   colRisk      = ci;
+        else if (h.includes('score') || h.includes('index') || h.includes('value'))   colScore     = ci;
+      });
+
+      // Positional defaults if headers not found
+      if (colState     < 0) colState     = 0;
+      if (colLga       < 0) colLga       = 1;
+      if (colCommunity < 0) colCommunity = 2;
+      if (colRisk      < 0) colRisk      = 3;
+      if (colScore     < 0) colScore     = 4;
+
+      $(table).find('tr').each((rIdx, row) => {
+        if (rIdx === 0) return; // skip header
+        const cols = $(row).find('td');
+        if (cols.length < 3) return;
+
+        const state     = $(cols[colState])?.text().trim()     || '';
+        const lga       = $(cols[colLga])?.text().trim()       || '';
+        const name      = $(cols[colCommunity])?.text().trim() || '';
+        const riskText  = $(cols[colRisk])?.text().trim()      || '';
+        const scoreText = $(cols[colScore])?.text().trim()      || '';
+
+        if (!name && !lga) return;
+
+        const score = parseRiskScore(riskText, scoreText);
+        communities.push({
+          id:        `${tIdx}_${rIdx}`,
+          name:      name || lga,
+          state,
+          lga,
+          riskScore: score,
+          weather:   'N/A',
+          action:    scoreToAction(score),
+        });
+      });
+    });
+
+    // If table parse returned nothing, try div/list layout
+    if (communities.length === 0) {
+      console.log('Table parse 0 results — trying div/list fallback');
+      const statePattern = /\b(Abia|Adamawa|Akwa Ibom|Anambra|Bauchi|Bayelsa|Benue|Borno|Cross River|Delta|Ebonyi|Edo|Ekiti|Enugu|FCT|Gombe|Imo|Jigawa|Kaduna|Kano|Katsina|Kebbi|Kogi|Kwara|Lagos|Nasarawa|Niger|Ogun|Ondo|Osun|Oyo|Plateau|Rivers|Sokoto|Taraba|Yobe|Zamfara)\b/i;
+      $('[class*="community"],[class*="lga"],[class*="flood"],[class*="risk"],li,.item').each((i, el) => {
+        const text = $(el).text().trim();
+        if (text.length < 3 || text.length > 200) return;
+        const stateMatch = text.match(statePattern);
+        communities.push({
+          id:        i.toString(),
+          name:      text.split('\n')[0].trim().substring(0, 80),
+          state:     stateMatch ? stateMatch[1] : '',
+          lga:       '',
+          riskScore: 70,
+          weather:   'N/A',
+          action:    'Take Action',
+        });
       });
     }
-  });
 
-  if (communities.length === 0) return getFallbackCommunities();
-  console.log(`Scraped ${communities.length} communities`);
-  return communities;
+    console.log(`Scraped ${communities.length} communities from WWO flood map`);
+
+    if (communities.length > 0) {
+      communities.sort((a, b) => b.riskScore - a.riskScore);
+      return communities; // ALL communities, no slice
+    }
+  }
+
+  // FALLBACK: homepage
+  console.log('WWO page failed — trying homepage fallback');
+  const homeHtml = await fetchHTML('https://www.fewsnigeria.com.ng');
+  if (homeHtml) {
+    const $h = cheerio.load(homeHtml);
+    const communities = [];
+    const pattern = /Port Harcourt|Okrika|Bonny|Warri|Lokoja|Makurdi|Onitsha|Asaba|Calabar|Benin City/;
+    $h('.community,.card,.item,li').each((i, el) => {
+      const text = $h(el).text();
+      if (pattern.test(text)) {
+        const name = $h(el).find('h3,h4,strong,.title').first().text().trim() || text.slice(0, 60).trim();
+        if (name) communities.push({ id: i.toString(), name, state: '', lga: '', riskScore: 85, weather: 'N/A', action: 'Evacuate Now' });
+      }
+    });
+    if (communities.length > 0) {
+      console.log(`Homepage fallback: ${communities.length} communities`);
+      return communities;
+    }
+  }
+
+  console.log('All scrapes failed — using hardcoded fallback');
+  return getFallbackCommunities();
 }
 
 function getFallbackCommunities() {
   return [
-    { id: '1', name: 'Port Harcourt urban core', state: 'Rivers', lga: 'Port Harcourt', riskScore: 100, weather: '27°C 73%', action: 'Evacuate Now' },
-    { id: '2', name: 'Okrika island/waterfront', state: 'Rivers', lga: 'Okrika', riskScore: 100, weather: '26°C 75%', action: 'Evacuate Now' },
-    { id: '3', name: 'Bonny Island', state: 'Rivers', lga: 'Bonny', riskScore: 100, weather: '25°C 79%', action: 'Evacuate Now' },
-    { id: '4', name: 'Warri city', state: 'Delta', lga: 'Warri South', riskScore: 100, weather: '26°C 89%', action: 'Evacuate Now' },
-    { id: '5', name: 'Burutu town', state: 'Delta', lga: 'Burutu', riskScore: 100, weather: '26°C 89%', action: 'Evacuate Now' },
-    { id: '6', name: 'Brass/Nembe-Brass coast', state: 'Bayelsa', lga: 'Brass', riskScore: 100, weather: '26°C 83%', action: 'Evacuate Now' },
+    { id:'1',  name:'Port Harcourt urban core',  state:'Rivers',  lga:'Port Harcourt',  riskScore:100, weather:'N/A', action:'Evacuate Now' },
+    { id:'2',  name:'Okrika island/waterfront',   state:'Rivers',  lga:'Okrika',         riskScore:100, weather:'N/A', action:'Evacuate Now' },
+    { id:'3',  name:'Bonny Island',               state:'Rivers',  lga:'Bonny',          riskScore:100, weather:'N/A', action:'Evacuate Now' },
+    { id:'4',  name:'Warri city',                 state:'Delta',   lga:'Warri South',    riskScore:100, weather:'N/A', action:'Evacuate Now' },
+    { id:'5',  name:'Burutu town',                state:'Delta',   lga:'Burutu',         riskScore:100, weather:'N/A', action:'Evacuate Now' },
+    { id:'6',  name:'Brass/Nembe-Brass coast',    state:'Bayelsa', lga:'Brass',          riskScore:100, weather:'N/A', action:'Evacuate Now' },
+    { id:'7',  name:'Onitsha metropolis',         state:'Anambra', lga:'Onitsha North',  riskScore:98,  weather:'N/A', action:'Evacuate Now' },
+    { id:'8',  name:'Asaba city',                 state:'Delta',   lga:'Oshimili South', riskScore:97,  weather:'N/A', action:'Evacuate Now' },
+    { id:'9',  name:'Lokoja metropolis',          state:'Kogi',    lga:'Lokoja',         riskScore:96,  weather:'N/A', action:'Evacuate Now' },
+    { id:'10', name:'Makurdi city',               state:'Benue',   lga:'Makurdi',        riskScore:95,  weather:'N/A', action:'Evacuate Now' },
   ];
 }
 
-// ------------------- STATE BREAKDOWN -------------------
+// ─── STATE BREAKDOWN ─────────────────────────────────────────
 async function scrapeStateBreakdown() {
   return {
-    critical: ['Abia', 'Akwa Ibom', 'Anambra', 'Bayelsa', 'Benue', 'Cross River', 'Delta', 'Ebonyi', 'Edo', 'Ekiti', 'Enugu', 'Imo', 'Lagos', 'Ogun', 'Ondo', 'Osun', 'Oyo', 'Rivers'],
-    high: ['Adamawa', 'Kebbi', 'Kogi', 'Kwara', 'Niger', 'Taraba'],
-    moderate: ['Bauchi', 'Borno', 'FCT', 'Gombe', 'Jigawa', 'Kaduna', 'Kano', 'Katsina', 'Nasarawa', 'Plateau', 'Sokoto', 'Yobe', 'Zamfara'],
+    critical: ['Abia','Akwa Ibom','Anambra','Bayelsa','Benue','Cross River','Delta','Ebonyi','Edo','Ekiti','Enugu','Imo','Lagos','Ogun','Ondo','Osun','Oyo','Rivers'],
+    high:     ['Adamawa','Kebbi','Kogi','Kwara','Niger','Taraba'],
+    moderate: ['Bauchi','Borno','FCT','Gombe','Jigawa','Kaduna','Kano','Katsina','Nasarawa','Plateau','Sokoto','Yobe','Zamfara'],
   };
 }
 
-// ------------------- WEATHER (Open-Meteo – free, no API key) -------------------
+// ─── WEATHER ─────────────────────────────────────────────────
 async function fetchWeatherFromOpenMeteo(lat, lon) {
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,weather_code&wind_speed_unit=kmh&timezone=auto`;
-
   const response = await axios.get(url);
-  const current = response.data.current;
-
-  // WMO weather interpretation codes → human-readable description
-  const weatherDescriptions = {
-    0: 'Clear sky',
-    1: 'Mainly clear',
-    2: 'Partly cloudy',
-    3: 'Overcast',
-    45: 'Foggy',
-    48: 'Icy fog',
-    51: 'Light drizzle',
-    53: 'Drizzle',
-    55: 'Heavy drizzle',
-    61: 'Light rain',
-    63: 'Rain',
-    65: 'Heavy rain',
-    71: 'Light snow',
-    73: 'Snow',
-    75: 'Heavy snow',
-    80: 'Light showers',
-    81: 'Showers',
-    82: 'Heavy showers',
-    95: 'Thunderstorm',
-    96: 'Thunderstorm with hail',
-    99: 'Thunderstorm with heavy hail',
-  };
-
-  // Convert wind degrees to compass direction
-  const windDirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-  const windDir = windDirs[Math.round(current.wind_direction_10m / 45) % 8];
-
+  const current  = response.data.current;
+  const desc = { 0:'Clear sky',1:'Mainly clear',2:'Partly cloudy',3:'Overcast',45:'Foggy',48:'Icy fog',51:'Light drizzle',53:'Drizzle',55:'Heavy drizzle',61:'Light rain',63:'Rain',65:'Heavy rain',71:'Light snow',73:'Snow',75:'Heavy snow',80:'Light showers',81:'Showers',82:'Heavy showers',95:'Thunderstorm',96:'Thunderstorm with hail',99:'Thunderstorm with heavy hail' };
+  const dirs = ['N','NE','E','SE','S','SW','W','NW'];
   return {
-    temp: `${current.temperature_2m}°C`,
-    condition: weatherDescriptions[current.weather_code] || 'Unknown',
-    humidity: `${current.relative_humidity_2m}%`,
+    temp:      `${current.temperature_2m}°C`,
+    condition: desc[current.weather_code] || 'Unknown',
+    humidity:  `${current.relative_humidity_2m}%`,
     feelsLike: `${current.apparent_temperature}°C`,
-    wind: `${windDir} ${current.wind_speed_10m} km/h`,
+    wind:      `${dirs[Math.round(current.wind_direction_10m/45)%8]} ${current.wind_speed_10m} km/h`,
   };
 }
 
-// ------------------- API ENDPOINTS -------------------
+// ─── ENDPOINTS ───────────────────────────────────────────────
 app.get('/river-status', async (req, res) => {
-  let rivers = cache.get('rivers');
-  if (!rivers) {
-    rivers = await scrapeRiverStatus();
-    cache.set('rivers', rivers);
-  }
-  res.json({ rivers });
+  let d = cache.get('rivers');
+  if (!d) { d = await scrapeRiverStatus(); cache.set('rivers', d); }
+  res.json({ rivers: d });
 });
 
 app.get('/risk-summary', async (req, res) => {
-  let summary = cache.get('summary');
-  if (!summary) {
-    summary = await scrapeRiskSummary();
-    cache.set('summary', summary);
-  }
-  res.json(summary);
+  let d = cache.get('summary');
+  if (!d) { d = await scrapeRiskSummary(); cache.set('summary', d); }
+  res.json(d);
 });
 
 app.get('/communities', async (req, res) => {
-  let communities = cache.get('communities');
-  if (!communities) {
-    communities = await scrapeCriticalCommunities();
-    cache.set('communities', communities);
-  }
-  res.json({ communities });
+  let d = cache.get('communities');
+  if (!d) { d = await scrapeCriticalCommunities(); cache.set('communities', d, 3600); }
+  res.json({ communities: d });
 });
 
 app.get('/state-breakdown', async (req, res) => {
-  let states = cache.get('states');
-  if (!states) {
-    states = await scrapeStateBreakdown();
-    cache.set('states', states);
-  }
-  res.json(states);
+  let d = cache.get('states');
+  if (!d) { d = await scrapeStateBreakdown(); cache.set('states', d); }
+  res.json(d);
 });
 
 app.get('/weather', async (req, res) => {
   const { lat, lon } = req.query;
   if (!lat || !lon) return res.status(400).json({ error: 'Missing lat/lon' });
   try {
-    const cacheKey = `weather_${lat}_${lon}`;
-    let weather = cache.get(cacheKey);
-    if (!weather) {
-      weather = await fetchWeatherFromOpenMeteo(lat, lon);
-      cache.set(cacheKey, weather);
-    }
-    res.json(weather);
-  } catch (error) {
-    console.error('Weather error:', error.message);
+    const key = `weather_${lat}_${lon}`;
+    let d = cache.get(key);
+    if (!d) { d = await fetchWeatherFromOpenMeteo(lat, lon); cache.set(key, d); }
+    res.json(d);
+  } catch (e) {
+    console.error('Weather error:', e.message);
     res.status(502).json({ error: 'Weather failed' });
   }
 });
 
-app.get('/', (req, res) => {
-  res.send('FEWS Nigeria Backend is live');
-});
-
+app.get('/', (req, res) => res.send('FEWS Nigeria Backend is live'));
 app.listen(PORT, () => console.log(`Server on port ${PORT}`));
