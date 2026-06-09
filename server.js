@@ -91,12 +91,24 @@ async function scrapeRiskSummary() {
   const criticalMatch = html.match(/(\d{1,3})\s*(?:critical|severe)/i);
   const highMatch     = html.match(/(\d{1,3})\s*high\s*risk/i);
   const moderateMatch = html.match(/(\d{1,3})\s*moderate/i);
-  const avgMatch      = html.match(/(\d{1,2})\/100/i);
+  const avgMatchRaw   = html.match(/(\d{1,2})\/100/i);
+  const avgRaw        = avgMatchRaw ? parseInt(avgMatchRaw[1]) : 0;
+
   const total    = totalMatch    ? parseInt(totalMatch[1].replace(/,/g, '')) : 2000;
   const critical = criticalMatch ? parseInt(criticalMatch[1])                : 914;
   const high     = highMatch     ? parseInt(highMatch[1])                    : 430;
   const moderate = moderateMatch ? parseInt(moderateMatch[1])                : 656;
-  const avg      = avgMatch      ? parseInt(avgMatch[1])                     : 76;
+
+  // Only trust scraped avg if it looks reasonable (40-99); otherwise calculate from counts
+  let avg = (avgRaw >= 40 && avgRaw <= 99) ? avgRaw : null;
+  if (!avg) {
+    const safeTotal = total > 0 ? total : 2000;
+    avg = Math.round(
+      (critical * 92 + high * 77 + moderate * 57 + Math.max(0, safeTotal - critical - high - moderate) * 25) / safeTotal
+    );
+    avg = Math.min(99, Math.max(40, avg));
+  }
+
   console.log(`Risk summary: total=${total}, critical=${critical}, high=${high}, moderate=${moderate}, avg=${avg}`);
   return { totalCommunities: total, criticalCount: critical, highCount: high, moderateCount: moderate, avgRiskScore: avg };
 }
